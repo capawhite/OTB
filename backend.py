@@ -1,10 +1,24 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from passlib.context import CryptContext
+import jwt
+from datetime import datetime, timedelta
+
+# JWT Configuration
+SECRET_KEY = "your_secret_key"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+def create_access_token(data: dict, expires_delta: timedelta):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + expires_delta
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 # Database Setup
 DATABASE_URL = "sqlite:///./otb_tournament.db"
@@ -13,6 +27,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 # Models
 class User(Base):
@@ -22,6 +37,7 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(String, default="player")  # "player" or "director"
+    score = Column(Integer, default=1000)  # Player ranking
 
 class Tournament(Base):
     __tablename__ = "tournaments"
@@ -53,6 +69,10 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 class TournamentCreate(BaseModel):
     name: str
@@ -98,13 +118,14 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     return {"message": "User created successfully"}
 
-# User Login
-@app.post("/login/")
-def login(user: UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
+# User Login with JWT
+@app.post("/login/", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == form_data.username).first()
+    if not db_user or not verify_password(form_data.password, db_user.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
-    return {"message": "Login successful"}
+    access_token = create_access_token({"sub": db_user.email}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    return {"access_token": access_token, "token_type": "bearer"}
 
 # Create Tournament
 @app.post("/tournaments/")
@@ -117,29 +138,25 @@ def create_tournament(tournament: TournamentCreate, db: Session = Depends(get_db
     db.refresh(db_tournament)
     return db_tournament
 
-# Update Tournament
-@app.put("/tournaments/{tournament_id}")
-def update_tournament(tournament_id: int, update: TournamentUpdate, db: Session = Depends(get_db)):
-    db_tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    if not db_tournament:
-        raise HTTPException(status_code=404, detail="Tournament not found")
-    if update.name:
-        db_tournament.name = update.name
-    if update.description:
-        db_tournament.description = update.description
-    if update.status:
-        db_tournament.status = update.status
-    db.commit()
-    db.refresh(db_tournament)
-    return db_tournament
-
-# Submit Match Result
+# Submit Match Result and Update Player Rankings
 @app.put("/matches/{match_id}")
 def update_match_result(match_id: int, result: MatchResultUpdate, db: Session = Depends(get_db)):
     db_match = db.query(Match).filter(Match.id == match_id).first()
     if not db_match:
         raise HTTPException(status_code=404, detail="Match not found")
     db_match.result = result.result
+    
+    # Update player rankings
+    if result.result == "1-0":
+        db.query(User).filter(User.id == db_match.player1_id).update({"score": User.score + 10})
+        db.query(User).filter(User.id == db_match.player2_id).update({"score": User.score - 10})
+    elif result.result == "0-1":
+        db.query(User).filter(User.id == db_match.player1_id).update({"score": User.score - 10})
+        db.query(User).filter(User.id == db_match.player2_id).update({"score": User.score + 10})
+    elif result.result == "1/2-1/2":
+        db.query(User).filter(User.id == db_match.player1_id).update({"score": User.score + 5})
+        db.query(User).filter(User.id == db_match.player2_id).update({"score": User.score + 5})
+    
     db.commit()
     db.refresh(db_match)
     return db_match
