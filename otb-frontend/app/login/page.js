@@ -1,5 +1,7 @@
+"use client";
+
 import { useState } from "react";
-import { useRouter } from "next/router";
+import { useRouter } from "next/navigation";
 import { FcGoogle } from "react-icons/fc";
 
 export default function Login() {
@@ -12,7 +14,7 @@ export default function Login() {
     e.preventDefault();
     setMessage(null);
     try {
-      const response = await fetch("http://127.0.0.1:8080/login/", {
+      const response = await fetch("http://127.0.0.1:8000/login/", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
